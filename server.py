@@ -1,32 +1,61 @@
-from flask import Flask, jsonify
+import threading
+import time
+import requests
 import json
-import os
+import base64
+from flask import Flask, jsonify
 
-app = Flask(__name__)
+# === CONFIG ===
+BANS_REPO = "MoldovanHoodClips/bans"
+BANS_FILE = "bans.json"
+GITHUB_TOKEN = "YOUR_GITHUB_PAT"  # Replace with your GitHub PAT
+UPDATE_INTERVAL = 15  # seconds
 
-# Path to the bans.json file
-BANS_FILE = os.path.join(os.path.dirname(__file__), "bans.json")
+banlist = []
 
-@app.route("/bans.json")
-def get_bans():
-    """
-    Returns the current ban list as JSON.
-    This reads the file each time, so updates are live without restarting.
-    """
+# === FETCH BANLIST FUNCTION ===
+def fetch_banlist():
+    global banlist
+    url = f"https://api.github.com/repos/{BANS_REPO}/contents/{BANS_FILE}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     try:
-        with open(BANS_FILE, "r") as f:
-            bans = json.load(f)
-        return jsonify(bans)
-    except FileNotFoundError:
-        return jsonify({"error": "bans.json not found"}), 404
-    except json.JSONDecodeError:
-        return jsonify({"error": "bans.json is invalid"}), 500
+        r = requests.get(url, headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        banlist = json.loads(content).get("banned_ids", [])
+        print(f"✅ Ban list updated! {len(banlist)} entries.")
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"⚠️ Could not fetch ban list: {e}")
+
+# === BACKGROUND UPDATER ===
+def start_banlist_updater():
+    def loop():
+        while True:
+            fetch_banlist()
+            time.sleep(UPDATE_INTERVAL)
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+
+# === FLASK APP ===
+app = Flask(__name__)
 
 @app.route("/")
 def home():
     return "OPSEC Ban API is running!"
 
+@app.route("/banlist")
+def get_banlist():
+    return jsonify({"banned_ids": banlist})
+
+@app.route("/check/<machine_id>")
+def check_machine(machine_id):
+    banned = machine_id in banlist
+    return jsonify({"machine_id": machine_id, "banned": banned})
+
+# === MAIN ===
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    print("Starting OPSEC Ban API Server...")
+    start_banlist_updater()
+    # Run Flask on all interfaces (0.0.0.0) and port 5000
+    app.run(host="0.0.0.0", port=5000)
